@@ -1,0 +1,100 @@
+--- PART 4/5 summary logic3.txt lines 1-100 sha1:abcd1234 ---
+
+    conversation_title: str = Path(...),
+    limit: int = Query(200),
+    offset: int = Query(0)
+):
+    path = get_action_path(agent, "data_messages")
+    upstream = compose_upstream(agent, path)
+
+    # Log upstream call
+    logger.info("Proxying get_messages agent=%s upstream=%s params=%s",
+                agent, upstream, {"conversation_title": conversation_title, "limit": limit, "offset": offset})
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(upstream, params={"conversation_title": conversation_title, "limit": limit, "offset": offset})
+
+    # Log upstream response summary
+    try:
+        content_preview = (resp.text[:500] + "...") if len(resp.text) > 500 else resp.text
+    except Exception:
+        content_preview = "<unable to read response text>"
+    logger.info("Upstream response for get_messages agent=%s status=%s content_len=%d preview=%s",
+                agent, resp.status_code, len(resp.content or b""), content_preview)
+
+    try:
+        content = resp.json()
+    except Exception:
+        content = resp.text
+    return JSONResponse(status_code=resp.status_code, content=content)
+
+
+@app.delete("/proxy/{agent}/conversations/{conversation_title}")
+async def delete_conversation(agent: str = Path(...), conversation_title: str = Path(...)):
+    path = get_action_path(agent, "delete")
+    upstream = compose_upstream(agent, path)
+
+    # Log upstream call
+    logger.info("Proxying delete_conversation agent=%s upstream=%s params=%s",
+                agent, upstream, {"conversation_title": conversation_title})
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(upstream, params={"conversation_title": conversation_title})
+
+    # Log upstream response summary
+    try:
+        content_preview = (resp.text[:500] + "...") if len(resp.text) > 500 else resp.text
+    except Exception:
+        content_preview = "<unable to read response text>"
+    logger.info("Upstream response for delete_conversation agent=%s status=%s content_len=%d preview=%s",
+                agent, resp.status_code, len(resp.content or b""), content_preview)
+
+    try:
+        content = resp.json()
+    except Exception:
+        content = resp.text
+    return JSONResponse(status_code=resp.status_code, content=content)
+]
+
+4. Reitissä @app.post("/generate") tapahtuu agenteille juttelu. En ole täysin varma voidaanko user prompti napata tuossa generate 
+reitin lopussa summaryä varten mutta tuonne loppupäähän tuota kyseistä funktiota voitaisiin rakentaa summary optio.
+
+4.11 Summary optio pitää logittaa, jotta voin seurata, onnistuuko vai epäonnistuuko yhteenvedon luonti.
+
+4.12 Kun yhteenvetoa eli summarisointia tehdään qwen agentilla sen summarisoinnin json rungon ja promptin pitää näyttää tältä:
+[Do not repeat the input.
+Do not reconstruct the input structure.
+Do not include any other fields.
+Do not echo the code block.
+Output must be valid JSON with exactly these two fields.
+
+Json input:
+{
+  "task": {
+    "instruction": "Generate two summaries: (1) user_intent: summarize the user's question in max 10 words. (2) llm_summary: summarize the model's answer in max 10 words. Do not repeat or quote the input."
+  },
+  "input": {
+    "user_prompt": "Tähän kenttään käyttäjältä tullut prompti",
+    "llm_response": "Tähän tulee Lmm mallin vastaus, joka saatiin generate funktion lopussa {result} kirjastosta"
+  },
+  "meta": {
+    "req_id": "Tämän voi ottaa muuttujasta {request_id} mikäli se on järkevää. Jos summarisointi vaatii oman id:n luo sellainen",
+    "conversation_title": "Tämä otsikko tulee ui:sta eli {conversation_title} muuttujasta",
+    "model": "qwen2.5",
+    "notes": "Separate intent and semantic summaries to avoid echoing."
+  }
+}] Tee tähän myös time out käsittely vaikkapa 3 minuutille ja silloin ohjelma ei odota enää eikä tallenna kantaan mitään.
+
+
+4.13 Kun agentti vastaa: 
+
+[```json
+{
+  "user_intent":
+
+"tiivistelmä käyttäjän promptista",
+  "llm_summary":
+
+"Tiivistelmä agentin vastauksesta"
+}
+```] tee tälle siis virheen hallinnalla ja logituksella varustettu automaattinen luku, ja tallenna se kantaan aikaleiman saattelemana.

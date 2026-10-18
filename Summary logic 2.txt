@@ -1,0 +1,100 @@
+--- PART 2/5 summary logic.txt lines 1-100 sha1:abcd1234 ---
+async def get_conn():
+    return await aiomysql.connect(**DB)
+
+
+IDLE_TIMEOUT = float(os.getenv("OLLAMA_IDLE_TIMEOUT", "5"))
+
+app = FastAPI(title="Ollama Proxy Collector")
+
+@app.on_event("startup")
+async def startup():
+    await ensure_schema()
+
+@app.post("/generate")
+async def generate(request: Request):
+    body = await request.json()
+    agent = body.get("agent")
+    if not agent:
+        raise HTTPException(status_code=400, detail="agent required")
+
+    # conversation_title from client (optional but forwarded and returned)
+    conversation_title = body.get("conversation_title")
+
+    # action or raw path selection (prefer action)
+    action = body.get("action")
+    client_path = body.get("path")
+
+    # Decide path: prefer action, fallback to client_path, default to 'generate'
+    if action:
+        try:
+            path = get_action_path(agent, action)
+        except HTTPException:
+            raise
+    elif client_path:
+        if not isinstance(client_path, str) or not client_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="path must start with '/'")
+        if ".." in client_path or not _SAFE_PATH_RE.match(client_path):
+            raise HTTPException(status_code=400, detail="invalid path")
+        path = client_path
+    else:
+        path = get_action_path(agent, "generate")
+
+    # Compose upstream URL safely
+    upstream = compose_upstream(agent, path)
+
+    # Ensure conversation_title is present in forwarded body if provided
+    if conversation_title:
+        body["conversation_title"] = conversation_title
+
+    req_id = str(uuid.uuid4())
+    model = body.get("model", "unknown")
+    prompt = body.get("prompt", "")
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    start = time.time()
+    full = ""
+    tokens = 0
+    done = False
+    idle_timed_out = False
+    upstream_status = None
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        try:
+            async with client.stream("POST", upstream, json=body) as resp:
+                upstream_status = resp.status_code
+                if resp.status_code >= 400:
+                    _ = await resp.aread()
+                    raise HTTPException(status_code=502, detail=f"Upstream error: {resp.status_code}")
+
+                full, tokens, done, idle_timed_out = await assemble_ndjson_text_and_store(
+                    resp, req_id, idle_timeout=IDLE_TIMEOUT, agent=agent
+                )
+        except httpx.RequestError as e:
+            logger.error(f"Upstream request failed for {req_id}: {e}")
+            raise HTTPException(status_code=502, detail=f"Upstream request failed: {str(e)}")
+
+    end = time.time()
+
+    # Try to include conversation_title in summary if store_request_summary supports it.
+    # If it doesn't, this call should be adjusted to match your function signature.
+    try:
+        await store_request_summary(req_id, model, prompt_hash, start, end, tokens, agent=agent, conversation_title=conversation_title)
+    except TypeError:
+        # fallback: call without conversation_title if signature doesn't accept it
+        await store_request_summary(req_id, model, prompt_hash, start, end, tokens, agent=agent)
+
+    result = {
+        "request_id": req_id,
+        "model": model,
+        "agent": agent,
+        "conversation_title": conversation_title,
+        "tokens": tokens,
+        "latency_ms": int((end - start) * 1000),
+        "text": full,
+        "done": bool(done),
+        "idle_timed_out": bool(idle_timed_out),
+        "prompt_preview": (prompt[:500] + "...") if len(prompt) > 500 else prompt,
+        "upstream_status": upstream_status
+    }
+
+    if idle_timed_out:

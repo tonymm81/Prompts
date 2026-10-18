@@ -1,0 +1,54 @@
+--- PART 5/5 summary logic4.txt lines 1-100 sha1:abcd1234 --- 
+4.14 Kun uusi prompti tulee niin tarkistetaan että onko conversation_title tai muu vastaava sama eli käyttäjä jatkaa samaa keskustelua
+niin haetaan kannasta 3 uusinta tai ei mitään tauluista :
+[
+id INT AUTO_INCREMENT PRIMARY KEY,
+  prompt_id INT NOT NULL,
+  user_intent VARCHAR(255),
+  llm_summary VARCHAR(255),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (prompt_id) REFERENCES prompts(id)
+]
+ja tehdään pyyntö valitulle agentille: 
+[
+Here is a short summary of the previous conversation:
+
+1. User intent: Tiivistelmä edellisestä kysymyksestä, joka luotiin tuossa aikaisemmin eli {user_intent} muutujasta
+   Assistant summary: tiivistelmä edellisestä eli {llm_summary} muuttujasta
+
+
+Now the user asks:
+"Tähän tulee uusi prompti kun keskustelua on jatkettu ja en ole varma löytyykö se result ja kenttä {prompt_preview}"
+]
+
+4.15 Kun yhteen veto jatkuu keskustelun edetessä xx pituiseksi tuo uusi pyyntö valitulle agentille näyttää tältä:
+[
+    Here is a short summary of the previous conversation:
+
+1. User intent: Tiivistelmä edellisestä kysymyksestä, joka luotiin tuossa aikaisemmin eli {user_intent} muutujasta
+   Assistant summary: tiivistelmä edellisestä eli {llm_summary} muuttujasta
+   Here is a short summary of the previous conversation:
+
+2. User intent: Tiivistelmä edellisestä kysymyksestä, joka luotiin tuossa aikaisemmin eli {user_intent} muutujasta
+   Assistant summary: tiivistelmä edellisestä eli {llm_summary} muuttujasta
+   Here is a short summary of the previous conversation:
+
+3. User intent: Tiivistelmä edellisestä kysymyksestä, joka luotiin tuossa aikaisemmin eli {user_intent} muutujasta
+   Assistant summary: tiivistelmä edellisestä eli {llm_summary} muuttujasta
+]
+ja nämä ovat siis kolme uusinta tiivistelmää
+
+5. OHjelma käyttää tuota analytics tietoa eli voisiko analyticsiin lisätä kentät: 
+[
+    prompt_id INT NOT NULL,
+  user_intent VARCHAR(255),
+  llm_summary VARCHAR(255),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (prompt_id) REFERENCES prompts(id)
+]
+
+5.1 Tarkista myös analyticsin reitti, että nämä tiedot myös palautetaan asiakas ohjelmalle.
+
+6. Katso samalla ettei tuossa proxy.py tiedostossa ole mitään turhaa testidataa olemassa. Kommentoi selkeästi muutoksesi englanniksi.
+
+7. Kysy jos tarvitset lisää koodia proxy.py ympärillä olevista ohjelmista.

@@ -1,0 +1,100 @@
+--- PART 1/5 summary logic.txt lines 1-100 sha1:abcd1234 ---
+1. Luodaan ensin maria db:hin joka on docker kontissa kentät: [CREATE TABLE IF NOT EXISTS summaries (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  prompt_id INT NOT NULL,
+  user_intent VARCHAR(255),
+  llm_summary VARCHAR(255),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (prompt_id) REFERENCES prompts(id)
+);
+]
+
+2. Tämän jälkeen tarkistetaan kontin ulkopuolelta että saadaan maria db uusiin kenttiin yhteys.
+
+3. Tämän jälkeen tarkistellaan proxy.py tiedoston koodia ja tehdään siihen muutokset summary featurea varten: [import os
+import time
+import uuid
+import hashlib
+import httpx
+import asyncio
+from fastapi import FastAPI, Request, HTTPException, Path, Query
+from fastapi.responses import JSONResponse
+import aiomysql
+
+from ndjson_parser import ensure_schema, assemble_ndjson_text_and_store, store_request_summary
+import logging
+from logging.handlers import RotatingFileHandler
+from urllib.parse import urljoin#version 109
+import re
+
+_SAFE_PATH_RE = re.compile(r"^/[-A-Za-z0-9_./%]*$")#version 109
+
+def get_action_path(agent: str, action: str) -> str:#version 109
+    if agent in AGENT_OVERRIDES and action in AGENT_OVERRIDES[agent]:
+        return AGENT_OVERRIDES[agent][action]
+    if action in AGENT_ENDPOINTS:
+        return AGENT_ENDPOINTS[action]
+    raise HTTPException(status_code=400, detail="Unknown action")
+
+def compose_upstream(agent: str, path: str) -> str:#version 109
+    base = AGENT_URLS.get(agent)
+    if not base:
+        raise HTTPException(status_code=400, detail="Unknown agent")
+    return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
+
+
+LOG_PATH = "/opt/ollama_proxy/proxy_main.log"
+
+logger = logging.getLogger("ollama_proxy_main")
+logger.setLevel(logging.INFO)
+
+handler = RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=3)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+handler.setFormatter(formatter)
+
+if not logger.handlers:
+    logger.addHandler(handler)
+
+AGENT_URLS = {#version 109
+    "pixatrail": os.getenv("OLLAMA_PIXATRAIL_URL", "http://127.0.0.1:7860"),
+    "ollama-dev": os.getenv("OLLAMA_DEV_URL", "http://127.0.0.1:7861"),
+    "ollama-qwen": os.getenv("OLLAMA_QWEN_URL", "http://127.0.0.1:11440"),
+}
+
+# Only the actions you actually use (no 'models' entry)
+AGENT_ENDPOINTS = {#version 109
+    "generate": "/api/generate",        # default
+    "data_list": "/agent/data",
+    "data_messages": "/agent/data/messages",
+    "data_last": "/agent/data/last",
+    "delete": "/agent/data"             # DELETE with ?conversation_title=...
+}
+
+# Per-agent overrides for actions that differ from the default
+AGENT_OVERRIDES = {#version 109
+    "pixatrail": { "generate": "/api/generate" },   # pixatrail uses /api/generate
+    "ollama-dev": { "generate": "/generate" },      # dev agent uses /api/generate
+    "ollama-qwen": { "generate": "/generate" }      # qwen uses /generate (no /api/)
+}
+
+def resolve_upstream(agent_name: str):
+    if not agent_name:
+        return None
+    if agent_name not in AGENT_URLS:
+        raise HTTPException(status_code=400, detail="Unknown agent")
+    return AGENT_URLS[agent_name]
+
+
+""""DB = {
+    "host": os.getenv("OLLAMA_DB_HOST", "127.0.0.1"),
+    "port": int(os.getenv("OLLAMA_DB_PORT", "3306")),
+    "user": os.getenv("OLLAMA_DB_USER", "proxy"),
+    "password": os.getenv("OLLAMA_DB_PASSWORD", ""),
+    "db": os.getenv("OLLAMA_DB_NAME", "ollama_proxy"),
+    "autocommit": True
+}"""" kommentoitu mutta oikeasti käytössä ohjelmassa.
+
+# Validate at startup
+if not DB["password"]:
+    logger.error("Database password not set in OLLAMA_DB_PASSWORD")
+    raise RuntimeError("Missing DB password environment variable OLLAMA_DB_PASSWORD")

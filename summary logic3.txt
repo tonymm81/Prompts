@@ -1,0 +1,99 @@
+--- PART 3/5 summary logic2.txt lines 1-100 sha1:abcd1234 ---
+        return JSONResponse(result, status_code=502)
+
+    return JSONResponse(result)
+
+
+@app.get("/stats")
+async def stats():
+    conn = await get_conn()
+    cur = await conn.cursor()
+
+    await cur.execute("""
+        SELECT COUNT(*), AVG(latency_ms), SUM(tokens),
+               MIN(latency_ms), MAX(latency_ms)
+        FROM requests
+    """)
+
+    row = await cur.fetchone()
+    await cur.close()
+    conn.close()
+
+    return {
+        "total_requests": int(row[0] or 0),
+        "avg_latency_ms": float(row[1]) if row[1] is not None else None,
+        "total_tokens": int(row[2] or 0),
+        "min_latency_ms": int(row[3]) if row[3] is not None else None,
+        "max_latency_ms": int(row[4]) if row[4] is not None else None
+    }
+
+@app.get("/requests/{request_id}")
+async def get_request(request_id: str):
+    conn = await get_conn()
+    cur = await conn.cursor()
+
+    await cur.execute("""
+        SELECT request_id, model, prompt_hash, start_ts, end_ts, latency_ms, tokens
+        FROM requests WHERE request_id=%s
+    """, (request_id,))
+    req = await cur.fetchone()
+
+    if not req:
+        await cur.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="request not found")
+
+    await cur.execute("""
+        SELECT ts, raw_line FROM events_raw
+        WHERE request_id=%s ORDER BY id ASC
+    """, (request_id,))
+    events = await cur.fetchall()
+
+    await cur.close()
+    conn.close()
+
+    return {
+        "summary": {
+            "request_id": req[0],
+            "model": req[1],
+            "prompt_hash": req[2],
+            "start_ts": req[3],
+            "end_ts": req[4],
+            "latency_ms": req[5],
+            "tokens": req[6]
+        },
+        "events": [{"ts": e[0], "raw_line": e[1]} for e in events]
+    }
+
+
+
+# Version 109 changes
+@app.get("/proxy/{agent}/conversations")
+async def list_conversations(agent: str = Path(...), limit: int = Query(100), offset: int = Query(0)):
+    path = get_action_path(agent, "data_list")
+    upstream = compose_upstream(agent, path)
+
+    # Log upstream call
+    logger.info("Proxying list_conversations agent=%s upstream=%s params=%s", agent, upstream, {"limit": limit, "offset": offset})
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(upstream, params={"limit": limit, "offset": offset})
+
+    # Log upstream response summary
+    try:
+        content_preview = (resp.text[:500] + "...") if len(resp.text) > 500 else resp.text
+    except Exception:
+        content_preview = "<unable to read response text>"
+    logger.info("Upstream response for list_conversations agent=%s status=%s content_len=%d preview=%s",
+                agent, resp.status_code, len(resp.content or b""), content_preview)
+
+    try:
+        content = resp.json()
+    except Exception:
+        content = resp.text
+    return JSONResponse(status_code=resp.status_code, content=content)
+
+
+@app.get("/proxy/{agent}/conversations/{conversation_title}/messages")
+async def get_messages(
+    agent: str = Path(...),
